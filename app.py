@@ -38,7 +38,7 @@ def rerun_app():
     elif hasattr(st, 'experimental_rerun'): st.experimental_rerun()
     else: st.stop()
 
-st.set_page_config(page_title="FLUX AI (最終完整版)", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="FLUX AI (未來兼容版)", page_icon="✅", layout="wide")
 
 # API 提供商
 API_PROVIDERS = {
@@ -128,7 +128,8 @@ def add_to_history(prompt: str, negative_prompt: str, model: str, images: List[s
 def display_image_with_actions(b64_json: str, image_id: str, history_item: Dict):
     try:
         img_data = base64.b64decode(b64_json)
-        st.image(Image.open(BytesIO(img_data)), use_column_width=True)
+        # **FIX**: Replaced deprecated 'use_column_width' with 'use_container_width'
+        st.image(Image.open(BytesIO(img_data)), use_container_width=True)
         col1, col2, col3 = st.columns(3)
         with col1: st.download_button("📥 下載", img_data, f"flux_{image_id}.png", "image/png", key=f"dl_{image_id}", use_container_width=True)
         with col2:
@@ -150,74 +151,65 @@ def init_api_client():
         except Exception: return None
     return None
 
-def provider_changed_callback():
-    provider = st.session_state.provider_selectbox
-    st.session_state.base_url_input = API_PROVIDERS[provider]['base_url_default']
-    st.session_state.api_key_input = ""
-    # We don't need to reset pollinations keys here as they are handled by the UI logic
-
-def load_profile_to_edit_state(profile_name):
-    config = st.session_state.api_profiles.get(profile_name, {})
-    st.session_state.provider_selectbox = config.get('provider', 'Pollinations.ai')
-    st.session_state.base_url_input = config.get('base_url', API_PROVIDERS.get(st.session_state.provider_selectbox, {}).get('base_url_default', ''))
-    st.session_state.api_key_input = config.get('api_key', '')
-    # Initialize pollinations keys to avoid errors, even if not used
-    st.session_state.pollinations_auth_mode = config.get('pollinations_auth_mode', '免費')
-    st.session_state.pollinations_referrer = config.get('pollinations_referrer', '')
-    st.session_state.pollinations_token = config.get('pollinations_token', '')
-    st.session_state.last_edited_profile = profile_name
-
 def show_api_settings():
     st.subheader("⚙️ API 存檔管理")
     profile_names = list(st.session_state.api_profiles.keys())
-    active_profile_name = st.selectbox("活動存檔", profile_names, index=profile_names.index(st.session_state.get('active_profile_name', profile_names[0])))
-
+    
+    active_profile_name = st.selectbox(
+        "活動存檔", 
+        profile_names, 
+        index=profile_names.index(st.session_state.get('active_profile_name', profile_names[0])),
+        key='active_profile_selector'
+    )
+    
     if active_profile_name != st.session_state.get('active_profile_name'):
         st.session_state.active_profile_name = active_profile_name
         st.session_state.discovered_models = {}
         rerun_app()
-    
-    if 'last_edited_profile' not in st.session_state or st.session_state.last_edited_profile != active_profile_name:
-        load_profile_to_edit_state(active_profile_name)
 
-    with st.expander("📝 編輯存檔內容", expanded=True):
-        sel_prov_name = st.selectbox(
-            "API 提供商", list(API_PROVIDERS.keys()), 
-            key='provider_selectbox',
-            format_func=lambda x: f"{API_PROVIDERS[x]['icon']} {API_PROVIDERS[x]['name']}",
-            on_change=provider_changed_callback
+    active_config = get_active_config().copy()
+
+    with st.expander("📝 編輯當前活動存檔", expanded=True):
+        
+        editor_provider = st.selectbox(
+            "API 提供商", 
+            list(API_PROVIDERS.keys()),
+            index=list(API_PROVIDERS.keys()).index(active_config.get('provider', 'Pollinations.ai')),
+            key='editor_provider_selectbox'
         )
+
+        api_key_input = active_config.get('api_key', '')
+        base_url_input = active_config.get('base_url', API_PROVIDERS[editor_provider]['base_url_default'])
         
-        # UI for editing
-        base_url_input = st.text_input("API 端點 URL", key='base_url_input')
+        if 'last_editor_provider' not in st.session_state:
+            st.session_state.last_editor_provider = editor_provider
         
-        if sel_prov_name == "Pollinations.ai":
-            st.radio("認證模式", ["免費", "域名", "令牌"], key='pollinations_auth_mode', horizontal=True)
-            st.text_input("應用域名 (Referrer)", key='pollinations_referrer', placeholder="例如: my-app.koyeb.app", disabled=(st.session_state.pollinations_auth_mode != '域名'))
-            st.text_input("API 令牌 (Token)", key='pollinations_token', type="password", disabled=(st.session_state.pollinations_auth_mode != '令牌'))
-            # For Pollinations, api_key_input is not used from UI, but we need it for config
-            api_key_input = "" 
+        if editor_provider != st.session_state.last_editor_provider:
+            base_url_input = API_PROVIDERS[editor_provider]['base_url_default']
+            api_key_input = ""
+            st.session_state.last_editor_provider = editor_provider
+
+        base_url_input = st.text_input("API 端點 URL", value=base_url_input)
+        
+        if editor_provider == "Pollinations.ai":
+            auth_mode = st.radio("認證模式", ["免費", "域名", "令牌"], index=["免費", "域名", "令牌"].index(active_config.get('pollinations_auth_mode', '免費')), horizontal=True)
+            referrer = st.text_input("應用域名 (Referrer)", value=active_config.get('pollinations_referrer', ''), placeholder="例如: my-app.koyeb.app", disabled=(auth_mode != '域名'))
+            token = st.text_input("API 令牌 (Token)", value=active_config.get('pollinations_token', ''), type="password", disabled=(auth_mode != '令牌'))
         else:
-            api_key_input = st.text_input("API 密鑰", key='api_key_input', type="password")
+            api_key_input = st.text_input("API 密鑰", value=api_key_input, type="password")
+            auth_mode, referrer, token = '免費', '', ''
     
     profile_name_input = st.text_input("存檔名稱", value=active_profile_name)
-    
+
     if st.button("💾 保存/更新存檔", type="primary"):
-        provider = st.session_state.provider_selectbox
         new_config = {
-            'provider': provider,
-            'api_key': st.session_state.api_key_input if provider != "Pollinations.ai" else "",
-            'base_url': st.session_state.base_url_input
+            'provider': editor_provider, 
+            'api_key': api_key_input, 
+            'base_url': base_url_input,
+            'pollinations_auth_mode': auth_mode,
+            'pollinations_referrer': referrer,
+            'pollinations_token': token
         }
-        
-        # **FIX**: Conditionally add pollinations settings to the config
-        if provider == "Pollinations.ai":
-            new_config.update({
-                'pollinations_auth_mode': st.session_state.pollinations_auth_mode,
-                'pollinations_referrer': st.session_state.pollinations_referrer,
-                'pollinations_token': st.session_state.pollinations_token
-            })
-        
         is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
         new_config['validated'] = is_valid
         
@@ -229,7 +221,6 @@ def show_api_settings():
         st.session_state.discovered_models = {}
         st.success(f"存檔 '{profile_name_input}' 已保存。驗證: {'成功' if is_valid else '失敗'}")
         time.sleep(1); rerun_app()
-
 
 init_session_state()
 client = init_api_client()
@@ -253,7 +244,7 @@ with st.sidebar:
     st.markdown("---")
     st.info(f"⚡ **免費版優化**\n- 歷史: {MAX_HISTORY_ITEMS}\n- 收藏: {MAX_FAVORITE_ITEMS}")
 
-st.title("🚀 FLUX AI (最終完整版)")
+st.title("✅ FLUX AI (未來兼容版)")
 
 # --- 主介面 ---
 tab1, tab2, tab3 = st.tabs(["🚀 生成圖像", f"📚 歷史 ({len(st.session_state.generation_history)})", f"⭐ 收藏 ({len(st.session_state.favorite_images)})"])
@@ -321,4 +312,4 @@ with tab3:
         for i, fav in enumerate(sorted(st.session_state.favorite_images, key=lambda x: x['timestamp'], reverse=True)):
             with cols[i % 3]: display_image_with_actions(fav['image_b64'], fav['id'], fav.get('history_item'))
 
-st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>🚀 最終完整版 | 部署在 Koyeb 免費實例 🚀</small></div>""", unsafe_allow_html=True)
+st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>✅ 未來兼容版 | 部署在 Koyeb 免費實例 ✅</small></div>""", unsafe_allow_html=True)
