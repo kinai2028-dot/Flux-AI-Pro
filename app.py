@@ -38,7 +38,7 @@ def rerun_app():
     elif hasattr(st, 'experimental_rerun'): st.experimental_rerun()
     else: st.stop()
 
-st.set_page_config(page_title="FLUX AI (未來兼容版)", page_icon="✅", layout="wide")
+st.set_page_config(page_title="FLUX AI (終極持久版)", page_icon="💾", layout="wide")
 
 # API 提供商
 API_PROVIDERS = {
@@ -52,9 +52,12 @@ BASE_FLUX_MODELS = {"flux.1-schnell": {"name": "FLUX.1 Schnell", "icon": "⚡", 
 # --- 核心函數 ---
 def init_session_state():
     if 'api_profiles' not in st.session_state:
-        st.session_state.api_profiles = {"預設 Pollinations": {'provider': 'Pollinations.ai', 'api_key': '', 'base_url': 'https://image.pollinations.ai', 'validated': True, 'pollinations_auth_mode': '免費', 'pollinations_token': '', 'pollinations_referrer': ''}}
+        base_profiles = st.secrets.get("api_profiles", {})
+        st.session_state.api_profiles = base_profiles.copy() if base_profiles else {"預設 Pollinations": {'provider': 'Pollinations.ai', 'api_key': '', 'base_url': 'https://image.pollinations.ai', 'validated': True, 'pollinations_auth_mode': '免費', 'pollinations_token': '', 'pollinations_referrer': ''}}
+    
     if 'active_profile_name' not in st.session_state or st.session_state.active_profile_name not in st.session_state.api_profiles:
-        st.session_state.active_profile_name = list(st.session_state.api_profiles.keys())[0]
+        st.session_state.active_profile_name = list(st.session_state.api_profiles.keys())[0] if st.session_state.api_profiles else ""
+
     defaults = {'generation_history': [], 'favorite_images': [], 'discovered_models': {}}
     for key, value in defaults.items():
         if key not in st.session_state: st.session_state[key] = value
@@ -74,8 +77,9 @@ def auto_discover_models(client, provider, base_url) -> Dict[str, Dict]:
         elif client:
             models = client.models.list().data
             for model in models:
-                if 'flux' in model.id.lower():
-                    discovered[model.id] = {"name": model.id.replace('-', ' ').replace('_', ' ').title(), "icon": "⚡"}
+                if 'flux' in model.id.lower() or 'kontext' in model.id.lower():
+                    icon = "⚡" if 'flux' in model.id.lower() else "🧠"
+                    discovered[model.id] = {"name": model.id.replace('-', ' ').replace('_', ' ').title(), "icon": icon}
     except Exception as e:
         st.error(f"發現模型失敗: {e}")
     return discovered
@@ -93,12 +97,14 @@ def validate_api_key(api_key: str, base_url: str, provider: str) -> Tuple[bool, 
     except Exception as e: return False, f"API 驗證失敗: {e}"
 
 def generate_images_with_retry(client, **params) -> Tuple[bool, any]:
-    prompt = params.pop("prompt", "")
-    if (neg_prompt := params.pop("negative_prompt", None)): prompt += f" --no {neg_prompt}"
     provider = get_active_config().get('provider')
     for attempt in range(3):
         try:
             if provider == "Pollinations.ai":
+                prompt = params.get("prompt", "")
+                if (neg_prompt := params.get("negative_prompt")):
+                    prompt += f" --no {neg_prompt}"
+                
                 width, height = params.get("size", "1024x1024").split('x')
                 api_params = {k: v for k, v in {"model": params.get("model"), "width": width, "height": height, "seed": random.randint(0, 1000000), "nologo": params.get("nologo"), "private": params.get("private"), "enhance": params.get("enhance"), "safe": params.get("safe")}.items() if v}
                 cfg = get_active_config()
@@ -109,15 +115,22 @@ def generate_images_with_retry(client, **params) -> Tuple[bool, any]:
                 response = requests.get(f"{cfg['base_url']}/prompt/{quote(prompt)}?{urlencode(api_params)}", headers=headers, timeout=120)
                 if response.ok: return True, type('MockResponse', (object,), {'data': [type('obj', (object,), {'b64_json': base64.b64encode(response.content).decode()})()]})()
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
-            else:
-                sdk_params = params.copy()
-                sdk_params.pop("negative_prompt", None); sdk_params.pop("enhance", None); sdk_params.pop("private", None); sdk_params.pop("nologo", None); sdk_params.pop("safe", None)
-                sdk_params["prompt"] = prompt
-                sdk_params["response_format"] = "b64_json"
+            
+            else: 
+                sdk_params = {
+                    "model": params.get("model"), "prompt": params.get("prompt"),
+                    "negative_prompt": params.get("negative_prompt"), "size": params.get("size"),
+                    "n": params.get("n", 1), "response_format": "b64_json"
+                }
+                sdk_params = {k: v for k, v in sdk_params.items() if v is not None and v != ""}
                 return True, client.images.generate(**sdk_params)
+
         except Exception as e:
-            if attempt < 2 and ("500" in str(e) or "timeout" in str(e).lower()): time.sleep((attempt + 1) * 2); continue
+            if attempt < 2 and ("500" in str(e) or "timeout" in str(e).lower()): 
+                time.sleep((attempt + 1) * 2)
+                continue
             return False, str(e)
+            
     return False, "所有重試均失敗"
 
 def add_to_history(prompt: str, negative_prompt: str, model: str, images: List[str], metadata: Dict):
@@ -128,7 +141,6 @@ def add_to_history(prompt: str, negative_prompt: str, model: str, images: List[s
 def display_image_with_actions(b64_json: str, image_id: str, history_item: Dict):
     try:
         img_data = base64.b64decode(b64_json)
-        # **FIX**: Replaced deprecated 'use_column_width' with 'use_container_width'
         st.image(Image.open(BytesIO(img_data)), use_container_width=True)
         col1, col2, col3 = st.columns(3)
         with col1: st.download_button("📥 下載", img_data, f"flux_{image_id}.png", "image/png", key=f"dl_{image_id}", use_container_width=True)
@@ -146,7 +158,7 @@ def display_image_with_actions(b64_json: str, image_id: str, history_item: Dict)
 
 def init_api_client():
     cfg = get_active_config()
-    if cfg.get('api_key') and cfg.get('provider') != "Pollinations.ai":
+    if cfg and cfg.get('api_key') and cfg.get('provider') != "Pollinations.ai":
         try: return OpenAI(api_key=cfg['api_key'], base_url=cfg['base_url'])
         except Exception: return None
     return None
@@ -155,10 +167,13 @@ def show_api_settings():
     st.subheader("⚙️ API 存檔管理")
     profile_names = list(st.session_state.api_profiles.keys())
     
+    if not profile_names:
+        st.warning("沒有可用的 API 存檔。請新增一個。")
+    
     active_profile_name = st.selectbox(
         "活動存檔", 
         profile_names, 
-        index=profile_names.index(st.session_state.get('active_profile_name', profile_names[0])),
+        index=profile_names.index(st.session_state.get('active_profile_name')) if st.session_state.get('active_profile_name') in profile_names else 0,
         key='active_profile_selector'
     )
     
@@ -167,65 +182,67 @@ def show_api_settings():
         st.session_state.discovered_models = {}
         rerun_app()
 
-    active_config = get_active_config().copy()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("➕ 新增存檔", use_container_width=True):
+            new_profile_name = "新存檔"
+            count = 1
+            while new_profile_name in st.session_state.api_profiles:
+                new_profile_name = f"新存檔_{count}"
+                count += 1
+            st.session_state.api_profiles[new_profile_name] = {'provider': 'Pollinations.ai', 'validated': False, 'base_url': API_PROVIDERS['Pollinations.ai']['base_url_default']}
+            st.session_state.active_profile_name = new_profile_name
+            rerun_app()
+    with col2:
+        if st.button("🗑️ 刪除當前存檔", use_container_width=True, disabled=len(st.session_state.api_profiles) <= 1 or not active_profile_name):
+            if active_profile_name:
+                del st.session_state.api_profiles[active_profile_name]
+                st.session_state.active_profile_name = list(st.session_state.api_profiles.keys())[0] if st.session_state.api_profiles else None
+                rerun_app()
 
-    with st.expander("📝 編輯當前活動存檔", expanded=True):
-        
-        editor_provider = st.selectbox(
-            "API 提供商", 
-            list(API_PROVIDERS.keys()),
-            index=list(API_PROVIDERS.keys()).index(active_config.get('provider', 'Pollinations.ai')),
-            key='editor_provider_selectbox'
-        )
+    if active_profile_name:
+        with st.expander("📝 編輯當前活動存檔", expanded=True):
+            active_config = get_active_config().copy()
+            editor_provider = st.selectbox(
+                "API 提供商", list(API_PROVIDERS.keys()),
+                index=list(API_PROVIDERS.keys()).index(active_config.get('provider', 'Pollinations.ai')),
+                key='editor_provider_selectbox'
+            )
+            api_key_input = active_config.get('api_key', '')
+            base_url_input = active_config.get('base_url', API_PROVIDERS[editor_provider]['base_url_default'])
+            if 'last_editor_provider' not in st.session_state: st.session_state.last_editor_provider = editor_provider
+            if editor_provider != st.session_state.last_editor_provider:
+                base_url_input = API_PROVIDERS[editor_provider]['base_url_default']
+                api_key_input = ""
+                st.session_state.last_editor_provider = editor_provider
 
-        api_key_input = active_config.get('api_key', '')
-        base_url_input = active_config.get('base_url', API_PROVIDERS[editor_provider]['base_url_default'])
+            base_url_input = st.text_input("API 端點 URL", value=base_url_input)
+            if editor_provider == "Pollinations.ai":
+                auth_mode = st.radio("認證模式", ["免費", "域名", "令牌"], index=["免費", "域名", "令牌"].index(active_config.get('pollinations_auth_mode', '免費')), horizontal=True)
+                referrer = st.text_input("應用域名 (Referrer)", value=active_config.get('pollinations_referrer', ''), placeholder="例如: my-app.koyeb.app", disabled=(auth_mode != '域名'))
+                token = st.text_input("API 令牌 (Token)", value=active_config.get('pollinations_token', ''), type="password", disabled=(auth_mode != '令牌'))
+            else:
+                api_key_input = st.text_input("API 密鑰", value=api_key_input, type="password")
+                auth_mode, referrer, token = '免費', '', ''
         
-        if 'last_editor_provider' not in st.session_state:
-            st.session_state.last_editor_provider = editor_provider
-        
-        if editor_provider != st.session_state.last_editor_provider:
-            base_url_input = API_PROVIDERS[editor_provider]['base_url_default']
-            api_key_input = ""
-            st.session_state.last_editor_provider = editor_provider
+            profile_name_input = st.text_input("存檔名稱", value=active_profile_name)
 
-        base_url_input = st.text_input("API 端點 URL", value=base_url_input)
-        
-        if editor_provider == "Pollinations.ai":
-            auth_mode = st.radio("認證模式", ["免費", "域名", "令牌"], index=["免費", "域名", "令牌"].index(active_config.get('pollinations_auth_mode', '免費')), horizontal=True)
-            referrer = st.text_input("應用域名 (Referrer)", value=active_config.get('pollinations_referrer', ''), placeholder="例如: my-app.koyeb.app", disabled=(auth_mode != '域名'))
-            token = st.text_input("API 令牌 (Token)", value=active_config.get('pollinations_token', ''), type="password", disabled=(auth_mode != '令牌'))
-        else:
-            api_key_input = st.text_input("API 密鑰", value=api_key_input, type="password")
-            auth_mode, referrer, token = '免費', '', ''
-    
-    profile_name_input = st.text_input("存檔名稱", value=active_profile_name)
-
-    if st.button("💾 保存/更新存檔", type="primary"):
-        new_config = {
-            'provider': editor_provider, 
-            'api_key': api_key_input, 
-            'base_url': base_url_input,
-            'pollinations_auth_mode': auth_mode,
-            'pollinations_referrer': referrer,
-            'pollinations_token': token
-        }
-        is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
-        new_config['validated'] = is_valid
-        
-        if profile_name_input != active_profile_name and active_profile_name in st.session_state.api_profiles:
-            del st.session_state.api_profiles[active_profile_name]
-
-        st.session_state.api_profiles[profile_name_input] = new_config
-        st.session_state.active_profile_name = profile_name_input
-        st.session_state.discovered_models = {}
-        st.success(f"存檔 '{profile_name_input}' 已保存。驗證: {'成功' if is_valid else '失敗'}")
-        time.sleep(1); rerun_app()
+            if st.button("💾 保存/更新存檔", type="primary"):
+                new_config = {'provider': editor_provider, 'api_key': api_key_input, 'base_url': base_url_input, 'pollinations_auth_mode': auth_mode, 'pollinations_referrer': referrer, 'pollinations_token': token}
+                is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
+                new_config['validated'] = is_valid
+                if profile_name_input != active_profile_name and active_profile_name in st.session_state.api_profiles:
+                    del st.session_state.api_profiles[active_profile_name]
+                st.session_state.api_profiles[profile_name_input] = new_config
+                st.session_state.active_profile_name = profile_name_input
+                st.session_state.discovered_models = {}
+                st.success(f"存檔 '{profile_name_input}' 已保存。")
+                time.sleep(1); rerun_app()
 
 init_session_state()
 client = init_api_client()
 cfg = get_active_config()
-api_configured = cfg.get('validated', False)
+api_configured = cfg and cfg.get('validated', False)
 
 # --- 側邊欄 ---
 with st.sidebar:
@@ -240,17 +257,18 @@ with st.sidebar:
                 st.session_state.discovered_models = discovered
                 st.success(f"發現 {len(discovered)} 個模型！") if discovered else st.warning("未發現任何模型。")
                 time.sleep(1); rerun_app()
-    else: st.error(f"🔴 '{st.session_state.active_profile_name}' 未驗證")
+    elif st.session_state.api_profiles:
+        st.error(f"🔴 '{st.session_state.active_profile_name}' 未驗證")
     st.markdown("---")
     st.info(f"⚡ **免費版優化**\n- 歷史: {MAX_HISTORY_ITEMS}\n- 收藏: {MAX_FAVORITE_ITEMS}")
 
-st.title("✅ FLUX AI (未來兼容版)")
+st.title("💾 FLUX AI (終極持久版)")
 
 # --- 主介面 ---
 tab1, tab2, tab3 = st.tabs(["🚀 生成圖像", f"📚 歷史 ({len(st.session_state.generation_history)})", f"⭐ 收藏 ({len(st.session_state.favorite_images)})"])
 
 with tab1:
-    if not api_configured: st.warning("⚠️ 請在側邊欄選擇一個已驗證的存檔。")
+    if not api_configured: st.warning("⚠️ 請在側邊欄選擇一個已驗證的存檔，或新增一個。")
     else:
         all_models = merge_models()
         if not all_models: st.warning("⚠️ 未發現任何模型。請點擊側邊欄的「發現模型」。")
@@ -279,7 +297,7 @@ with tab1:
                     enhance, private, nologo, safe = st.checkbox("增強提示詞", True), st.checkbox("私密模式", True), st.checkbox("移除標誌", True), st.checkbox("安全模式", False)
 
             if st.button("🚀 生成圖像", type="primary", use_container_width=True, disabled=not prompt_val.strip()):
-                final_prompt = f"{prompt_val}, {STYLE_PRESETS[selected_style]}" if selected_style != "無" else prompt_val
+                final_prompt = f"{prompt_val}, {STYLE_PRESETS[selected_style]}" if selected_style != "無" and STYLE_PRESETS[selected_style] else prompt_val
                 with st.spinner("🎨 正在生成圖像..."):
                     params = {"model": sel_model, "prompt": final_prompt, "negative_prompt": negative_prompt_val, "size": final_size_str, "n": 1, "enhance": enhance, "private": private, "nologo": nologo, "safe": safe}
                     success, result = generate_images_with_retry(client, **params)
@@ -312,4 +330,4 @@ with tab3:
         for i, fav in enumerate(sorted(st.session_state.favorite_images, key=lambda x: x['timestamp'], reverse=True)):
             with cols[i % 3]: display_image_with_actions(fav['image_b64'], fav['id'], fav.get('history_item'))
 
-st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>✅ 未來兼容版 | 部署在 Koyeb 免費實例 ✅</small></div>""", unsafe_allow_html=True)
+st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>💾 終極持久版 | 部署在 Koyeb 免費實例 💾</small></div>""", unsafe_allow_html=True)
