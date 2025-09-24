@@ -47,13 +47,7 @@ API_PROVIDERS = {
     "OpenAI Compatible": {"name": "OpenAI 兼容 API", "base_url_default": "https://api.openai.com/v1", "icon": "🤖"},
 }
 
-# 基礎和動態發現的模型模式
 BASE_FLUX_MODELS = {"flux.1-schnell": {"name": "FLUX.1 Schnell", "icon": "⚡", "priority": 1}}
-FLUX_MODEL_PATTERNS = {
-    r'flux[\.\-]?1[\.\-]?schnell': {"name": "FLUX.1 Schnell", "icon": "⚡", "priority": 100},
-    r'flux[\.\-]?1[\.\-]?dev': {"name": "FLUX.1 Dev", "icon": "🔧", "priority": 200},
-    r'flux[\.\-]?1[\.\-]?pro': {"name": "FLUX.1 Pro", "icon": "👑", "priority": 300},
-}
 
 # --- 核心函數 ---
 def init_session_state():
@@ -67,25 +61,33 @@ def init_session_state():
 
 def get_active_config(): return st.session_state.api_profiles.get(st.session_state.active_profile_name, {})
 
-def analyze_model_name(model_id: str) -> Dict:
-    model_lower = model_id.lower()
-    for pattern, info in FLUX_MODEL_PATTERNS.items():
-        if re.search(pattern, model_lower):
-            return {"name": info["name"], "icon": info["icon"], "priority": info["priority"]}
-    return {"name": model_id.replace('-', ' ').replace('_', ' ').title(), "icon": "🤖", "priority": 999}
-
-def auto_discover_flux_models(client) -> Dict[str, Dict]:
-    if not client: st.error("API 客戶端未初始化，無法發現模型。"); return {}
+def auto_discover_models(client, provider, base_url) -> Dict[str, Dict]:
+    discovered = {}
     try:
-        models = client.models.list().data
-        return {model.id: analyze_model_name(model.id) for model in models if 'flux' in model.id.lower()}
+        if provider == "Pollinations.ai":
+            response = requests.get(f"{base_url}/models", timeout=10)
+            if response.ok:
+                models = response.json()
+                for model_name in models:
+                    discovered[model_name] = {"name": model_name.replace('-', ' ').title(), "icon": "🌸"}
+            else: st.warning(f"無法從 Pollinations 獲取模型列表: HTTP {response.status_code}")
+        elif client:
+            models = client.models.list().data
+            for model in models:
+                if 'flux' in model.id.lower():
+                    discovered[model.id] = {"name": model.id.replace('-', ' ').replace('_', ' ').title(), "icon": "⚡"}
     except Exception as e:
-        st.warning(f"自動發現模型失敗: {e}"); return {}
+        st.error(f"發現模型失敗: {e}")
+    return discovered
 
 def merge_models() -> Dict[str, Dict]:
-    if get_active_config().get('provider') == 'Pollinations.ai': return {"default": {"name": "Pollinations Default", "icon": "🌸"}}
-    merged = {**BASE_FLUX_MODELS, **st.session_state.get('discovered_models', {})}
-    return dict(sorted(merged.items(), key=lambda item: item[1].get('priority', 999)))
+    provider = get_active_config().get('provider')
+    if provider == 'Pollinations.ai':
+        # 對於 Pollinations，如果沒有發現模型，則使用預設
+        return st.session_state.get('discovered_models') or {"flux": {"name": "Flux (預設)", "icon": "🌸"}}
+    else:
+        # 對於其他 provider，合併基礎模型和發現的模型
+        return {**BASE_FLUX_MODELS, **st.session_state.get('discovered_models', {})}
 
 def validate_api_key(api_key: str, base_url: str, provider: str) -> Tuple[bool, str]:
     if provider == "Pollinations.ai": return True, "Pollinations.ai 無需驗證"
@@ -100,7 +102,7 @@ def generate_images_with_retry(client, **params) -> Tuple[bool, any]:
         try:
             if provider == "Pollinations.ai":
                 width, height = params.get("size", "1024x1024").split('x')
-                api_params = {k: v for k, v in {"width": width, "height": height, "seed": random.randint(0, 1000000), "nologo": params.get("nologo"), "private": params.get("private"), "enhance": params.get("enhance"), "safe": params.get("safe")}.items() if v}
+                api_params = {k: v for k, v in {"model": params.get("model"), "width": width, "height": height, "seed": random.randint(0, 1000000), "nologo": params.get("nologo"), "private": params.get("private"), "enhance": params.get("enhance"), "safe": params.get("safe")}.items() if v}
                 cfg = get_active_config()
                 headers = {}
                 auth_mode = cfg.get('pollinations_auth_mode', '免費')
@@ -157,6 +159,7 @@ def show_api_settings():
     
     if active_profile_name != st.session_state.active_profile_name:
         st.session_state.active_profile_name = active_profile_name
+        st.session_state.discovered_models = {} # 切換存檔時清空已發現模型
         rerun_app()
 
     active_config = get_active_config().copy()
@@ -186,6 +189,7 @@ def show_api_settings():
 
         st.session_state.api_profiles[profile_name_input] = new_config
         st.session_state.active_profile_name = profile_name_input
+        st.session_state.discovered_models = {} # 保存後清空
         st.success(f"存檔 '{profile_name_input}' 已保存。驗證: {'成功' if is_valid else '失敗'}")
         time.sleep(1); rerun_app()
 
@@ -200,12 +204,13 @@ with st.sidebar:
     st.markdown("---")
     if api_configured:
         st.success(f"🟢 活動存檔: '{st.session_state.active_profile_name}'")
-        can_discover = (client is not None) and (cfg.get('provider') != "Pollinations.ai")
-        if st.button("🔍 發現 FLUX 模型", use_container_width=True, disabled=not can_discover):
+        # 對於 OpenAI 兼容的 API，client 必須存在
+        can_discover = (client is not None) or (cfg.get('provider') == "Pollinations.ai")
+        if st.button("🔍 發現模型", use_container_width=True, disabled=not can_discover):
             with st.spinner("🔍 正在發現模型..."):
-                discovered = auto_discover_flux_models(client)
+                discovered = auto_discover_models(client, cfg['provider'], cfg['base_url'])
                 st.session_state.discovered_models = discovered
-                st.success(f"發現 {len(discovered)} 個 FLUX 模型！") if discovered else st.warning("未發現任何 FLUX 模型。")
+                st.success(f"發現 {len(discovered)} 個模型！") if discovered else st.warning("未發現任何模型。")
                 time.sleep(1); rerun_app()
     else: st.error(f"🔴 '{st.session_state.active_profile_name}' 未驗證")
     st.markdown("---")
@@ -220,7 +225,7 @@ with tab1:
     if not api_configured: st.warning("⚠️ 請在側邊欄選擇一個已驗證的存檔。")
     else:
         all_models = merge_models()
-        if not all_models: st.warning("⚠️ 未發現任何 FLUX 模型。請檢查 API 配置或點擊「發現模型」。")
+        if not all_models: st.warning("⚠️ 未發現任何模型。請點擊側邊欄的「發現模型」。")
         else:
             prompt_default = st.session_state.pop('vary_prompt', '')
             neg_prompt_default = st.session_state.pop('vary_negative_prompt', '')
