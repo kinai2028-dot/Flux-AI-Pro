@@ -51,17 +51,20 @@ def rerun_app():
     elif hasattr(st, 'experimental_rerun'): st.experimental_rerun()
     else: st.stop()
 
-st.set_page_config(page_title="FLUX AI (功能增強版)", page_icon="✨", layout="wide")
+st.set_page_config(page_title="FLUX AI (終極模型版)", page_icon="🏆", layout="wide")
 
-# **FIX**: Add hardcoded models for Pollinations.ai
+# **FIX**: Add the latest FLUX models to the hardcoded list
 API_PROVIDERS = {
     "Pollinations.ai": {
         "name": "Pollinations.ai Studio", 
         "base_url_default": "https://image.pollinations.ai", 
         "icon": "🌸",
         "hardcoded_models": {
-            "flux-pro": {"name": "Flux Pro", "icon": "✨"},
-            "flux-kontext-pro": {"name": "Flux Kontext Pro", "icon": "🧠"}
+            "flux-1.1-pro": {"name": "Flux 1.1 Pro", "icon": "🏆"},
+            "flux.1-kontext-pro": {"name": "Flux.1 Kontext Pro", "icon": "🧠"},
+            "flux.1-kontext-max": {"name": "Flux.1 Kontext Max", "icon": "👑"},
+            "flux-dev": {"name": "Flux Dev", "icon": "🛠️"},
+            "flux-schnell": {"name": "Flux Schnell", "icon": "⚡"}
         }
     },
     "NavyAI": {"name": "NavyAI", "base_url_default": "https://api.navy/v1", "icon": "⚓"},
@@ -102,15 +105,13 @@ def auto_discover_models(client, provider, base_url) -> Dict[str, Dict]:
     except Exception as e: st.error(f"發現模型失敗: {e}")
     return discovered
 
-# **FIX**: Update merge_models to include hardcoded models
 def merge_models() -> Dict[str, Dict]:
     provider = get_active_config().get('provider')
     if provider == 'Pollinations.ai':
         discovered = st.session_state.get('discovered_models', {})
         hardcoded = API_PROVIDERS['Pollinations.ai'].get('hardcoded_models', {})
         return {**hardcoded, **discovered}
-    else: 
-        return {**BASE_FLUX_MODELS, **st.session_state.get('discovered_models', {})}
+    else: return {**BASE_FLUX_MODELS, **st.session_state.get('discovered_models', {})}
 
 def validate_api_key(api_key: str, base_url: str, provider: str) -> Tuple[bool, str]:
     if provider == "Pollinations.ai": return True, "Pollinations.ai 無需驗證"
@@ -119,29 +120,43 @@ def validate_api_key(api_key: str, base_url: str, provider: str) -> Tuple[bool, 
 
 def generate_images_with_retry(client, **params) -> Tuple[bool, any]:
     provider = get_active_config().get('provider')
-    for attempt in range(3):
-        try:
-            if provider == "Pollinations.ai":
-                prompt = params.get("prompt", "")
-                if (neg_prompt := params.get("negative_prompt")): prompt += f" --no {neg_prompt}"
-                width, height = str(params.get("size", "1024x1024")).split('x')
-                api_params = {k: v for k, v in {"model": params.get("model"), "width": width, "height": height, "seed": random.randint(0, 1000000), "nologo": params.get("nologo"), "private": params.get("private"), "enhance": params.get("enhance"), "safe": params.get("safe")}.items() if v}
+    n_images = params.get("n", 1)
+
+    if provider == "Pollinations.ai":
+        generated_images = []
+        for i in range(n_images):
+            try:
+                current_params = params.copy()
+                current_params["seed"] = random.randint(0, 1000000)
+                prompt = current_params.get("prompt", "")
+                if (neg_prompt := current_params.get("negative_prompt")): prompt += f" --no {neg_prompt}"
+                width, height = str(current_params.get("size", "1024x1024")).split('x')
+                api_params = {k: v for k, v in {"model": current_params.get("model"), "width": width, "height": height, "seed": current_params.get("seed"), "nologo": current_params.get("nologo"), "private": current_params.get("private"), "enhance": current_params.get("enhance"), "safe": current_params.get("safe")}.items() if v}
                 cfg = get_active_config()
                 headers = {}
                 auth_mode = cfg.get('pollinations_auth_mode', '免費')
                 if auth_mode == '令牌' and cfg.get('pollinations_token'): headers['Authorization'] = f"Bearer {cfg['pollinations_token']}"
                 elif auth_mode == '域名' and cfg.get('pollinations_referrer'): headers['Referer'] = cfg['pollinations_referrer']
                 response = requests.get(f"{cfg['base_url']}/prompt/{quote(prompt)}?{urlencode(api_params)}", headers=headers, timeout=120)
-                if response.ok: return True, type('MockResponse', (object,), {'data': [type('obj', (object,), {'b64_json': base64.b64encode(response.content).decode()})()]})()
-                raise Exception(f"HTTP {response.status_code}: {response.text}")
-            else: 
-                sdk_params = {"model": params.get("model"), "prompt": params.get("prompt"), "negative_prompt": params.get("negative_prompt"), "size": str(params.get("size")), "n": params.get("n", 1), "response_format": "b64_json"}
-                sdk_params = {k: v for k, v in sdk_params.items() if v is not None and v != ""}
-                return True, client.images.generate(**sdk_params)
-        except Exception as e:
-            if attempt < 2 and ("500" in str(e) or "timeout" in str(e).lower()): time.sleep((attempt + 1) * 2); continue
-            return False, str(e)
-    return False, "所有重試均失敗"
+                if response.ok:
+                    b64_json = base64.b64encode(response.content).decode()
+                    image_obj = type('Image', (object,), {'b64_json': b64_json})
+                    generated_images.append(image_obj)
+                else: st.warning(f"第 {i+1} 張圖片生成失敗: HTTP {response.status_code}")
+            except Exception as e:
+                st.warning(f"第 {i+1} 張圖片生成時出錯: {e}")
+                continue
+        if generated_images:
+            response_obj = type('Response', (object,), {'data': generated_images})
+            return True, response_obj
+        else: return False, "所有圖片生成均失敗。"
+    else: 
+        try:
+            sdk_params = {"model": params.get("model"), "prompt": params.get("prompt"), "negative_prompt": params.get("negative_prompt"), "size": str(params.get("size")), "n": n_images, "response_format": "b64_json"}
+            sdk_params = {k: v for k, v in sdk_params.items() if v is not None and v != ""}
+            return True, client.images.generate(**sdk_params)
+        except Exception as e: return False, str(e)
+    return False, "未知錯誤。"
 
 def add_to_history(prompt: str, negative_prompt: str, model: str, images: List[str], metadata: Dict):
     history = st.session_state.generation_history
@@ -193,9 +208,7 @@ def show_api_settings():
     st.subheader("⚙️ API 存檔管理")
     profile_names = list(st.session_state.api_profiles.keys())
     if not profile_names: st.warning("沒有可用的 API 存檔。請新增一個。")
-    
     active_profile_name = st.selectbox("活動存檔", profile_names, index=profile_names.index(st.session_state.get('active_profile_name')) if st.session_state.get('active_profile_name') in profile_names else 0)
-    
     if st.session_state.get('active_profile_name') != active_profile_name or 'profile_being_edited' not in st.session_state or st.session_state.profile_being_edited != active_profile_name:
         st.session_state.active_profile_name = active_profile_name
         load_profile_to_editor_state(active_profile_name)
@@ -222,21 +235,18 @@ def show_api_settings():
             st.text_input("存檔名稱", value=active_profile_name, key="editor_profile_name")
             st.selectbox("API 提供商", list(API_PROVIDERS.keys()), key='editor_provider_selectbox', on_change=editor_provider_changed)
             st.text_input("API 端點 URL", key='editor_base_url')
-            
             if st.session_state.editor_provider_selectbox == "Pollinations.ai":
                 st.radio("認證模式", ["免費", "域名", "令牌"], key='editor_auth_mode', horizontal=True)
                 st.text_input("應用域名 (Referrer)", key='editor_referrer', disabled=(st.session_state.editor_auth_mode != '域名'))
                 st.text_input("API 令牌 (Token)", key='editor_token', type="password", disabled=(st.session_state.editor_auth_mode != '令牌'))
-            else:
-                st.text_input("API 密鑰", key='editor_api_key', type="password")
+            else: st.text_input("API 密鑰", key='editor_api_key', type="password")
 
             if st.button("💾 保存/更新存檔", type="primary"):
                 provider = st.session_state.editor_provider_selectbox
                 new_config = {'provider': provider, 'base_url': st.session_state.editor_base_url}
                 if provider == "Pollinations.ai":
                     new_config.update({'api_key': '', 'pollinations_auth_mode': st.session_state.editor_auth_mode, 'pollinations_referrer': st.session_state.editor_referrer, 'pollinations_token': st.session_state.editor_token})
-                else:
-                    new_config.update({'api_key': st.session_state.editor_api_key, 'pollinations_auth_mode': '免費', 'pollinations_referrer': '', 'pollinations_token': ''})
+                else: new_config.update({'api_key': st.session_state.editor_api_key, 'pollinations_auth_mode': '免費', 'pollinations_referrer': '', 'pollinations_token': ''})
                 is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
                 new_config['validated'] = is_valid
                 new_name = st.session_state.editor_profile_name
@@ -268,7 +278,7 @@ with st.sidebar:
     st.markdown("---")
     st.info(f"⚡ **免費版優化**\n- 歷史: {MAX_HISTORY_ITEMS}\n- 收藏: {MAX_FAVORITE_ITEMS}")
 
-st.title("✨ FLUX AI (功能增強版)")
+st.title("🏆 FLUX AI (終極模型版)")
 
 # --- 主介面 ---
 tab1, tab2, tab3 = st.tabs(["🚀 生成圖像", f"📚 歷史 ({len(st.session_state.generation_history)})", f"⭐ 收藏 ({len(st.session_state.favorite_images)})"])
@@ -285,10 +295,10 @@ with tab1:
             model_default_index = list(all_models.keys()).index(model_default_key) if model_default_key in all_models else 0
 
             sel_model = st.selectbox("模型:", list(all_models.keys()), index=model_default_index, format_func=lambda x: f"{all_models.get(x, {}).get('icon', '🤖')} {all_models.get(x, {}).get('name', x)}")
+            n_images = st.slider("生成數量", 1, MAX_BATCH_SIZE, 1)
             selected_style = st.selectbox("🎨 風格預設:", list(STYLE_PRESETS.keys()))
             prompt_val = st.text_area("✍️ 提示詞:", value=prompt_default, height=100, placeholder="一隻貓在日落下飛翔，電影感，高品質")
             negative_prompt_val = st.text_area("🚫 負向提示詞:", value=neg_prompt_default, height=50, placeholder="模糊, 糟糕的解剖結構, 文字, 水印")
-            
             size_preset = st.selectbox("圖像尺寸", options=list(IMAGE_SIZES.keys()), format_func=lambda x: IMAGE_SIZES[x])
             final_size_str = size_preset
             if size_preset == "自定義...":
@@ -304,12 +314,12 @@ with tab1:
 
             if st.button("🚀 生成圖像", type="primary", use_container_width=True, disabled=not prompt_val.strip()):
                 final_prompt = f"{prompt_val}, {STYLE_PRESETS[selected_style]}" if selected_style != "無" and STYLE_PRESETS[selected_style] else prompt_val
-                with st.spinner("🎨 正在生成圖像..."):
-                    params = {"model": sel_model, "prompt": final_prompt, "negative_prompt": negative_prompt_val, "size": final_size_str, "n": 1, "enhance": enhance, "private": private, "nologo": nologo, "safe": safe}
+                with st.spinner(f"🎨 正在生成 {n_images} 張圖像..."):
+                    params = {"model": sel_model, "prompt": final_prompt, "negative_prompt": negative_prompt_val, "size": final_size_str, "n": n_images, "enhance": enhance, "private": private, "nologo": nologo, "safe": safe}
                     success, result = generate_images_with_retry(client, **params)
-                    if success:
+                    if success and result.data:
                         img_b64s = [img.b64_json for img in result.data]
-                        add_to_history(prompt_val, negative_prompt_val, sel_model, img_b64s, {"size": final_size_str, "provider": cfg['provider'], "style": selected_style})
+                        add_to_history(prompt_val, negative_prompt_val, sel_model, img_b64s, {"size": final_size_str, "provider": cfg['provider'], "style": selected_style, "n": n_images})
                         st.success(f"✨ 成功生成 {len(img_b64s)} 張圖像！")
                         cols = st.columns(min(len(img_b64s), 2))
                         for i, b64_json in enumerate(img_b64s):
@@ -336,4 +346,4 @@ with tab3:
         for i, fav in enumerate(sorted(st.session_state.favorite_images, key=lambda x: x['timestamp'], reverse=True)):
             with cols[i % 3]: display_image_with_actions(fav['image_b64'], fav['id'], fav.get('history_item'))
 
-st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>✨ 功能增強版 | 部署在雲端平台 ✨</small></div>""", unsafe_allow_html=True)
+st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>🏆 終極模型版 | 部署在雲端平台 🏆</small></div>""", unsafe_allow_html=True)
