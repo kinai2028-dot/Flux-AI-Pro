@@ -151,21 +151,17 @@ def init_api_client():
     return None
 
 def provider_changed_callback():
-    """當 API 提供商選擇框改變時，自動更新 URL 和清空密鑰。"""
     provider = st.session_state.provider_selectbox
     st.session_state.base_url_input = API_PROVIDERS[provider]['base_url_default']
     st.session_state.api_key_input = ""
-    # 重置 Pollinations 特定設置
-    st.session_state.pollinations_auth_mode = '免費'
-    st.session_state.pollinations_referrer = ''
-    st.session_state.pollinations_token = ''
+    # We don't need to reset pollinations keys here as they are handled by the UI logic
 
 def load_profile_to_edit_state(profile_name):
-    """將選定的存檔加載到用於編輯的會話狀態中。"""
     config = st.session_state.api_profiles.get(profile_name, {})
     st.session_state.provider_selectbox = config.get('provider', 'Pollinations.ai')
     st.session_state.base_url_input = config.get('base_url', API_PROVIDERS.get(st.session_state.provider_selectbox, {}).get('base_url_default', ''))
     st.session_state.api_key_input = config.get('api_key', '')
+    # Initialize pollinations keys to avoid errors, even if not used
     st.session_state.pollinations_auth_mode = config.get('pollinations_auth_mode', '免費')
     st.session_state.pollinations_referrer = config.get('pollinations_referrer', '')
     st.session_state.pollinations_token = config.get('pollinations_token', '')
@@ -192,25 +188,36 @@ def show_api_settings():
             on_change=provider_changed_callback
         )
         
+        # UI for editing
+        base_url_input = st.text_input("API 端點 URL", key='base_url_input')
+        
         if sel_prov_name == "Pollinations.ai":
             st.radio("認證模式", ["免費", "域名", "令牌"], key='pollinations_auth_mode', horizontal=True)
             st.text_input("應用域名 (Referrer)", key='pollinations_referrer', placeholder="例如: my-app.koyeb.app", disabled=(st.session_state.pollinations_auth_mode != '域名'))
             st.text_input("API 令牌 (Token)", key='pollinations_token', type="password", disabled=(st.session_state.pollinations_auth_mode != '令牌'))
+            # For Pollinations, api_key_input is not used from UI, but we need it for config
+            api_key_input = "" 
         else:
-            st.text_input("API 密鑰", key='api_key_input', type="password")
-        
-        st.text_input("API 端點 URL", key='base_url_input')
-
+            api_key_input = st.text_input("API 密鑰", key='api_key_input', type="password")
+    
     profile_name_input = st.text_input("存檔名稱", value=active_profile_name)
+    
     if st.button("💾 保存/更新存檔", type="primary"):
+        provider = st.session_state.provider_selectbox
         new_config = {
-            'provider': st.session_state.provider_selectbox, 
-            'api_key': st.session_state.api_key_input, 
-            'base_url': st.session_state.base_url_input, 
-            'pollinations_auth_mode': st.session_state.pollinations_auth_mode, 
-            'pollinations_referrer': st.session_state.pollinations_referrer, 
-            'pollinations_token': st.session_state.pollinations_token
+            'provider': provider,
+            'api_key': st.session_state.api_key_input if provider != "Pollinations.ai" else "",
+            'base_url': st.session_state.base_url_input
         }
+        
+        # **FIX**: Conditionally add pollinations settings to the config
+        if provider == "Pollinations.ai":
+            new_config.update({
+                'pollinations_auth_mode': st.session_state.pollinations_auth_mode,
+                'pollinations_referrer': st.session_state.pollinations_referrer,
+                'pollinations_token': st.session_state.pollinations_token
+            })
+        
         is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
         new_config['validated'] = is_valid
         
@@ -222,6 +229,7 @@ def show_api_settings():
         st.session_state.discovered_models = {}
         st.success(f"存檔 '{profile_name_input}' 已保存。驗證: {'成功' if is_valid else '失敗'}")
         time.sleep(1); rerun_app()
+
 
 init_session_state()
 client = init_api_client()
