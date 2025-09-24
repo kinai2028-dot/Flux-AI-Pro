@@ -4,7 +4,7 @@
 
 這個項目的目標是提供一個統一、流暢且高度可配置的界面，讓用戶可以輕鬆地利用包括 FLUX 家族在內的各種頂級 AI 圖像生成模型進行創作。
 
-[url=https://www.uploadhouse.com/viewfile.php?id=32142780&showlnk=0][img]https://img0.uploadhouse.com/fileuploads/32142/32142780f4a4a9c9fdd02040e009a89353da0b16.png[/img][/url]
+[url=https://ibb.co/q3HK7WFK][img]https://i.ibb.co/q3HK7WFK/2025-09-25-041946.png[/img][/url]
 
  <!-- 請替換為您自己的應用截圖 URL -->
 
@@ -78,7 +78,7 @@
     ```
 
 ### 3. Koyeb 部署步驟
-
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?name=koyeb-flux-free&type=git&repository=kinai2028-dot%2FFlux-AI-Pro&branch=main&run_command=streamlit+run+app.py+--server.port%3D%24PORT+--server.address%3D0.0.0.0+--server.headless%3Dtrue&instance_type=free&regions=was&instances_min=0&autoscaling_sleep_idle_delay=300)
 1.  **推送到 GitHub**: 將包含以上兩個文件的項目文件夾推送到一個新的或現有的 GitHub 儲存庫。
 2.  **登錄 Koyeb**: 使用您的 GitHub 帳戶登錄 Koyeb。
 3.  **創建 Web Service**:
