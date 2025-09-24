@@ -51,10 +51,18 @@ STYLE_PRESETS = {
     "線條藝術": "line art, monochrome, minimalist, clean lines",
     "霓虹龐克": "neon punk, fluorescent, glowing, psychedelic, vibrant",
     
-    # 新增風格
     "黑白線條藝術": "black and white line art, minimalist, clean vector, coloring book style",
 }
 
+# **FIX**: Added the missing IMAGE_SIZES definition
+IMAGE_SIZES = {
+    "自定義...": "Custom",
+    "1024x1024": "正方形 (1:1)",
+    "1080x1080": "IG 貼文 (1:1)",
+    "1080x1350": "IG 縱向 (4:5)",
+    "1080x1920": "IG Story (9:16)",
+    "1200x630": "FB 橫向 (1.91:1)",
+}
 
 def rerun_app():
     if hasattr(st, 'rerun'): st.rerun()
