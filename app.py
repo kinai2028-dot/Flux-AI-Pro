@@ -38,7 +38,7 @@ def rerun_app():
     elif hasattr(st, 'experimental_rerun'): st.experimental_rerun()
     else: st.stop()
 
-st.set_page_config(page_title="FLUX AI (終極自訂版)", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="FLUX AI (最終完整版)", page_icon="🚀", layout="wide")
 
 # API 提供商
 API_PROVIDERS = {
@@ -46,7 +46,6 @@ API_PROVIDERS = {
     "NavyAI": {"name": "NavyAI", "base_url_default": "https://api.navy/v1", "icon": "⚓"},
     "Pollinations.ai": {"name": "Pollinations.ai (免費)", "base_url_default": "https://image.pollinations.ai", "icon": "🌸"},
     "OpenAI Compatible": {"name": "OpenAI 兼容 API", "base_url_default": "https://api.openai.com/v1", "icon": "🤖"},
-    "Custom": {"name": "自定義 API", "base_url_default": "", "icon": "🔧"},
 }
 
 # 基礎和動態發現的模型模式
@@ -60,7 +59,7 @@ FLUX_MODEL_PATTERNS = {
 # --- 核心函數 ---
 def init_session_state():
     if 'api_profiles' not in st.session_state:
-        st.session_state.api_profiles = {"預設 SiliconFlow": {'provider': 'SiliconFlow', 'api_key': '', 'base_url': 'https://api.siliconflow.cn/v1', 'validated': False}}
+        st.session_state.api_profiles = {"預設 Pollinations": {'provider': 'Pollinations.ai', 'api_key': '', 'base_url': 'https://image.pollinations.ai', 'validated': True, 'pollinations_auth_mode': '免費', 'pollinations_token': '', 'pollinations_referrer': ''}}
     if 'active_profile_name' not in st.session_state or st.session_state.active_profile_name not in st.session_state.api_profiles:
         st.session_state.active_profile_name = list(st.session_state.api_profiles.keys())[0]
     defaults = {'generation_history': [], 'favorite_images': [], 'discovered_models': {}}
@@ -102,8 +101,62 @@ def validate_api_key(api_key: str, base_url: str, provider: str) -> Tuple[bool, 
     except Exception as e: return False, f"API 驗證失敗: {e}"
 
 def generate_images_with_retry(client, **params) -> Tuple[bool, any]:
-    # ... (生成邏輯與之前版本相同) ...
-    return True, "生成成功（模擬）"
+    prompt = params.pop("prompt", "")
+    if (neg_prompt := params.pop("negative_prompt", None)):
+        prompt += f" --no {neg_prompt}"
+    
+    provider = get_active_config().get('provider')
+
+    for attempt in range(3):
+        try:
+            if provider == "Pollinations.ai":
+                width, height = params.get("size", "1024x1024").split('x')
+                api_params = {k: v for k, v in {"model": params.get("model"), "width": width, "height": height, "seed": random.randint(0, 1000000), "nologo": params.get("nologo"), "private": params.get("private"), "enhance": params.get("enhance"), "safe": params.get("safe")}.items() if v}
+                
+                cfg = get_active_config()
+                headers = {}
+                auth_mode = cfg.get('pollinations_auth_mode', '免費')
+                if auth_mode == '令牌' and cfg.get('pollinations_token'): headers['Authorization'] = f"Bearer {cfg['pollinations_token']}"
+                elif auth_mode == '域名' and cfg.get('pollinations_referrer'): headers['Referer'] = cfg['pollinations_referrer']
+
+                response = requests.get(f"{cfg['base_url']}/prompt/{quote(prompt)}?{urlencode(api_params)}", headers=headers, timeout=120)
+                if response.ok: return True, type('MockResponse', (object,), {'data': [type('obj', (object,), {'b64_json': base64.b64encode(response.content).decode()})()]})()
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
+            else:
+                sdk_params = params.copy()
+                sdk_params["prompt"] = prompt
+                sdk_params.pop("negative_prompt", None)
+                sdk_params["response_format"] = "b64_json"
+                return True, client.images.generate(**sdk_params)
+        except Exception as e:
+            if attempt < 2 and ("500" in str(e) or "timeout" in str(e).lower()):
+                time.sleep((attempt + 1) * 2)
+                continue
+            return False, str(e)
+    return False, "所有重試均失敗"
+
+def add_to_history(prompt: str, negative_prompt: str, model: str, images: List[str], metadata: Dict):
+    history = st.session_state.generation_history
+    history.insert(0, {"id": str(uuid.uuid4()), "timestamp": datetime.datetime.now(), "prompt": prompt, "negative_prompt": negative_prompt, "model": model, "images": images, "metadata": metadata})
+    st.session_state.generation_history = history[:MAX_HISTORY_ITEMS]
+
+def display_image_with_actions(b64_json: str, image_id: str, history_item: Dict):
+    try:
+        img_data = base64.b64decode(b64_json)
+        st.image(Image.open(BytesIO(img_data)), use_column_width=True)
+        col1, col2, col3 = st.columns(3)
+        with col1: st.download_button("📥 下載", img_data, f"flux_{image_id}.png", "image/png", key=f"dl_{image_id}", use_container_width=True)
+        with col2:
+            is_fav = any(fav['id'] == image_id for fav in st.session_state.favorite_images)
+            if st.button("⭐" if is_fav else "☆", key=f"fav_{image_id}", use_container_width=True, help="收藏/取消收藏"):
+                if is_fav: st.session_state.favorite_images = [f for f in st.session_state.favorite_images if f['id'] != image_id]
+                else: st.session_state.favorite_images.append({"id": image_id, "image_b64": b64_json, "timestamp": datetime.datetime.now(), "history_item": history_item})
+                rerun_app()
+        with col3:
+            if st.button("🎨 變體", key=f"vary_{image_id}", use_container_width=True, help="使用此提示生成變體"):
+                st.session_state.update({'vary_prompt': history_item['prompt'], 'vary_negative_prompt': history_item.get('negative_prompt', ''), 'vary_model': history_item['model']})
+                rerun_app()
+    except Exception as e: st.error(f"圖像顯示錯誤: {e}")
 
 def init_api_client():
     cfg = get_active_config()
@@ -115,77 +168,132 @@ def init_api_client():
 def show_api_settings():
     st.subheader("⚙️ API 存檔管理")
     profile_names = list(st.session_state.api_profiles.keys())
+    st.session_state.active_profile_name = st.selectbox("活動存檔", profile_names, index=profile_names.index(st.session_state.active_profile_name) if st.session_state.active_profile_name in profile_names else 0)
+    active_config = get_active_config().copy()
     
-    # 使用 session state 來追蹤當前的選擇，以便比較
-    if 'current_selectbox_provider' not in st.session_state:
-        st.session_state.current_selectbox_provider = get_active_config().get('provider', 'SiliconFlow')
+    with st.expander("📝 編輯存檔內容", expanded=True):
+        provs = list(API_PROVIDERS.keys())
+        sel_prov_name = st.selectbox("API 提供商", provs, index=provs.index(active_config.get('provider', 'Pollinations.ai')), format_func=lambda x: f"{API_PROVIDERS[x]['icon']} {API_PROVIDERS[x]['name']}")
+        
+        api_key_input, auth_mode, referrer, token = active_config.get('api_key', ''), '免費', '', ''
 
-    sel_prov_name = st.selectbox(
-        "API 提供商", list(API_PROVIDERS.keys()), 
-        index=list(API_PROVIDERS.keys()).index(st.session_state.current_selectbox_provider), 
-        format_func=lambda x: f"{API_PROVIDERS[x]['icon']} {API_PROVIDERS[x]['name']}"
-    )
-
-    # 檢查提供商是否已更改
-    if sel_prov_name != st.session_state.current_selectbox_provider:
-        st.session_state.current_selectbox_provider = sel_prov_name
-        # 清空舊的 key 和 URL，強制用戶輸入新的
-        st.session_state.api_key_input = ""
-        st.session_state.base_url_input = API_PROVIDERS[sel_prov_name]['base_url_default']
-        rerun_app()
-
-    # 從 session state 中獲取或初始化輸入值
-    api_key_input = st.text_input("API 密鑰", value=st.session_state.get('api_key_input', ''), type="password", disabled=(sel_prov_name == "Pollinations.ai"))
-    base_url_input = st.text_input("API 端點 URL", value=st.session_state.get('base_url_input', API_PROVIDERS[sel_prov_name]['base_url_default']))
+        if sel_prov_name == "Pollinations.ai":
+            auth_mode = st.radio("認證模式", ["免費", "域名", "令牌"], horizontal=True, index=["免費", "域名", "令牌"].index(active_config.get('pollinations_auth_mode', '免費')))
+            referrer = st.text_input("應用域名 (Referrer)", value=active_config.get('pollinations_referrer', ''), placeholder="例如: my-app.koyeb.app", disabled=(auth_mode != '域名'))
+            token = st.text_input("API 令牌 (Token)", value=active_config.get('pollinations_token', ''), type="password", disabled=(auth_mode != '令牌'))
+        else:
+            api_key_input = st.text_input("API 密鑰", value=api_key_input, type="password")
+        
+        base_url_input = st.text_input("API 端點 URL", value=active_config.get('base_url', API_PROVIDERS[sel_prov_name]['base_url_default']))
 
     st.markdown("---")
-    profile_name_input = st.text_input("存檔名稱", value=st.session_state.get('active_profile_name', '新存檔'))
-    
-    if st.button("💾 保存/更新存檔", type="primary"):
-        new_config = {'provider': sel_prov_name, 'api_key': api_key_input, 'base_url': base_url_input}
-        is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
-        new_config['validated'] = is_valid
-        st.session_state.api_profiles[profile_name_input] = new_config
-        st.session_state.active_profile_name = profile_name_input
-        
-        if is_valid:
-            with st.spinner("驗證成功，正在自動發現模型..."):
-                client = init_api_client()
-                discovered = auto_discover_flux_models(client)
-                st.session_state.discovered_models = discovered
-                st.success(f"✅ 存檔 '{profile_name_input}' 已保存，並發現 {len(discovered)} 個 FLUX 模型！")
-        else:
-            st.error(f"❌ 存檔 '{profile_name_input}' 已保存，但驗證失敗: {msg}")
-        
-        time.sleep(2); rerun_app()
+    profile_name_input = st.text_input("存檔名稱", value=st.session_state.active_profile_name)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 保存/更新存檔", type="primary"):
+            new_config = {'provider': sel_prov_name, 'api_key': api_key_input, 'base_url': base_url_input, 'pollinations_auth_mode': auth_mode, 'pollinations_referrer': referrer, 'pollinations_token': token}
+            is_valid, msg = validate_api_key(new_config['api_key'], new_config['base_url'], new_config['provider'])
+            new_config['validated'] = is_valid
+            st.session_state.api_profiles[profile_name_input] = new_config
+            st.session_state.active_profile_name = profile_name_input
+            st.success(f"存檔 '{profile_name_input}' 已保存。驗證: {'成功' if is_valid else '失敗'}")
+            time.sleep(1); rerun_app()
+    with col2:
+        if st.button("🗑️ 刪除此存檔", disabled=len(st.session_state.api_profiles) <= 1):
+            del st.session_state.api_profiles[st.session_state.active_profile_name]
+            st.session_state.active_profile_name = list(st.session_state.api_profiles.keys())[0]
+            st.success("存檔已刪除。"); time.sleep(1); rerun_app()
 
 init_session_state()
+client = init_api_client()
+cfg = get_active_config()
+api_configured = cfg.get('validated', False)
 
 # --- 側邊欄 ---
 with st.sidebar:
     show_api_settings()
-    # ... (其餘側邊欄 UI) ...
+    st.markdown("---")
+    if api_configured:
+        st.success(f"🟢 活動存檔: '{st.session_state.active_profile_name}'")
+        if st.button("🔍 發現 FLUX 模型", use_container_width=True, disabled=(cfg['provider'] == "Pollinations.ai")):
+            with st.spinner("🔍 正在發現模型..."):
+                discovered = auto_discover_flux_models(client)
+                st.session_state.discovered_models = discovered
+                st.success(f"發現 {len(discovered)} 個 FLUX 模型！") if discovered else st.warning("未發現任何 FLUX 模型。")
+                time.sleep(1); rerun_app()
+    else: st.error(f"🔴 '{st.session_state.active_profile_name}' 未驗證")
+    st.markdown("---")
+    st.info(f"⚡ **免費版優化**\n- 歷史: {MAX_HISTORY_ITEMS}\n- 收藏: {MAX_FAVORITE_ITEMS}")
 
-st.title("🛠️ FLUX AI (終極自訂版)")
+st.title("🚀 FLUX AI (最終完整版)")
 
 # --- 主介面 ---
-cfg = get_active_config()
-api_configured = cfg.get('validated', False)
-client = init_api_client()
-
-tab1, tab2, tab3 = st.tabs(["🚀 生成圖像", f"📚 歷史", f"⭐ 收藏"])
+tab1, tab2, tab3 = st.tabs(["🚀 生成圖像", f"📚 歷史 ({len(st.session_state.generation_history)})", f"⭐ 收藏 ({len(st.session_state.favorite_images)})"])
 
 with tab1:
-    if not api_configured: st.warning("⚠️ 請在側邊欄配置並驗證一個 API 存檔。")
+    if not api_configured: st.warning("⚠️ 請在側邊欄選擇一個已驗證的存檔。")
     else:
         all_models = merge_models()
-        if not all_models: st.warning("⚠️ 未發現任何 FLUX 模型。請檢查 API 配置或重新發現。")
+        if not all_models and cfg.get('provider') != 'Pollinations.ai': st.warning("⚠️ 未發現模型，請點擊「發現 FLUX 模型」。")
         else:
-            sel_model = st.selectbox("模型:", list(all_models.keys()), format_func=lambda x: f"{all_models.get(x, {}).get('icon', '🤖')} {all_models.get(x, {}).get('name', x)}")
-            # ... (其餘生成 UI) ...
-            if st.button("🚀 生成圖像", type="primary"):
-                st.success("圖像生成成功！（模擬）")
+            prompt_default = st.session_state.pop('vary_prompt', '')
+            neg_prompt_default = st.session_state.pop('vary_negative_prompt', '')
+            model_default_key = st.session_state.pop('vary_model', list(all_models.keys())[0])
+            model_default_index = list(all_models.keys()).index(model_default_key) if model_default_key in all_models else 0
 
-# ... (歷史和收藏夾標籤) ...
+            sel_model = st.selectbox("模型:", list(all_models.keys()), index=model_default_index, format_func=lambda x: f"{all_models[x].get('icon', '🤖')} {all_models[x].get('name', x)}")
+            selected_style = st.selectbox("🎨 風格預設:", list(STYLE_PRESETS.keys()))
+            prompt_val = st.text_area("✍️ 提示詞:", value=prompt_default, height=100, placeholder="一隻貓在日落下飛翔，電影感，高品質")
+            negative_prompt_val = st.text_area("🚫 負向提示詞:", value=neg_prompt_default, height=50, placeholder="模糊, 糟糕的解剖結構, 文字, 水印")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                size_preset = st.selectbox("圖像尺寸", options=list(IMAGE_SIZES.keys()), format_func=lambda x: IMAGE_SIZES[x])
+                width, height = 1024, 1024
+                if size_preset == "自定義...":
+                    col_w, col_h = st.columns(2)
+                    with col_w: width = st.slider("寬度 (px)", 256, 2048, 1024, 64)
+                    with col_h: height = st.slider("高度 (px)", 256, 2048, 1024, 64)
+                final_size_str = f"{width}x{height}" if size_preset == "自定義..." else size_preset
+            with col2:
+                num_images = 1 if cfg['provider'] == "Pollinations.ai" else st.slider("生成數量", 1, MAX_BATCH_SIZE, 1)
 
-st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>🛠️ 終極自訂版 | 部署在 Koyeb 免費實例 🛠️</small></div>""", unsafe_allow_html=True)
+            enhance, private, nologo, safe = False, False, False, False
+            if cfg.get('provider') == "Pollinations.ai":
+                with st.expander("🌸 Pollinations.ai 進階選項"):
+                    enhance, private, nologo, safe = st.checkbox("增強提示詞", True), st.checkbox("私密模式", True), st.checkbox("移除標誌", True), st.checkbox("安全模式", False)
+
+            if st.button("🚀 生成圖像", type="primary", use_container_width=True, disabled=not prompt_val.strip()):
+                final_prompt = f"{prompt_val}, {STYLE_PRESETS[selected_style]}" if selected_style != "無" else prompt_val
+                with st.spinner(f"🎨 正在生成 {num_images} 張圖像..."):
+                    params = {"model": sel_model, "prompt": final_prompt, "negative_prompt": negative_prompt_val, "n": num_images, "size": final_size_str, "enhance": enhance, "private": private, "nologo": nologo, "safe": safe}
+                    success, result = generate_images_with_retry(client, **params)
+                    if success:
+                        img_b64s = [img.b64_json for img in result.data]
+                        add_to_history(prompt_val, negative_prompt_val, sel_model, img_b64s, {"size": final_size_str, "provider": cfg['provider'], "style": selected_style})
+                        st.success(f"✨ 成功生成 {len(img_b64s)} 張圖像！")
+                        cols = st.columns(min(len(img_b64s), 2))
+                        for i, b64_json in enumerate(img_b64s):
+                            with cols[i % 2]: display_image_with_actions(b64_json, f"{st.session_state.generation_history[0]['id']}_{i}", st.session_state.generation_history[0])
+                        gc.collect()
+                    else: st.error(f"❌ 生成失敗: {result}")
+
+with tab2:
+    if not st.session_state.generation_history: st.info("📭 尚無生成歷史。")
+    else:
+        for item in st.session_state.generation_history:
+            with st.expander(f"🎨 {item['prompt'][:50]}... | {item['timestamp'].strftime('%m-%d %H:%M')}"):
+                st.markdown(f"**提示詞**: {item['prompt']}\n\n**模型**: {merge_models().get(item['model'], {}).get('name', item['model'])}")
+                if item.get('negative_prompt'): st.markdown(f"**負向提示詞**: {item['negative_prompt']}")
+                cols = st.columns(min(len(item['images']), 2))
+                for i, b64_json in enumerate(item['images']):
+                    with cols[i % 2]: display_image_with_actions(b64_json, f"hist_{item['id']}_{i}", item)
+
+with tab3:
+    if not st.session_state.favorite_images: st.info("⭐ 尚無收藏的圖像。")
+    else:
+        cols = st.columns(3)
+        for i, fav in enumerate(sorted(st.session_state.favorite_images, key=lambda x: x['timestamp'], reverse=True)):
+            with cols[i % 3]: display_image_with_actions(fav['image_b64'], fav['id'], fav.get('history_item'))
+
+st.markdown("""<div style="text-align: center; color: #888; margin-top: 2rem;"><small>🚀 最終完整版 | 部署在 Koyeb 免費實例 🚀</small></div>""", unsafe_allow_html=True)
